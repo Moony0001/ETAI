@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from backend.adapters.base import AbstractSourceAdapter
@@ -126,10 +126,37 @@ class OpenMeteoAdapter(AbstractSourceAdapter):
         return out
 
     # ------------------------------------------------------------------
+    def series_window(self, lat: float, lon: float, t: datetime) -> list[MetPoint]:
+        """Pick forecast (recent) vs archive (historical) automatically for time t.
+
+        Recent window -> /forecast with past_days; older than ~5 days -> the ERA5
+        /archive endpoint. This is what lets `--date <past stubble episode>` pull
+        REAL historical wind for the Delhi->Punjab corridor demo.
+        """
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        age_days = (datetime.now(timezone.utc) - t).days
+        if age_days <= 5:
+            return self.series(lat, lon, past_days=max(3, age_days + 2), forecast_days=1)
+        start = (t - timedelta(days=2)).strftime("%Y-%m-%d")
+        end = (t + timedelta(days=1)).strftime("%Y-%m-%d")
+        return self.series(lat, lon, archive=True, start_date=start, end_date=end)
+
+    def make_wind_fn(self, t: datetime):
+        """Return wind_fn(lat, lon, tt) for the trajectory, caching per grid cell."""
+        cache: dict[tuple[float, float], list[MetPoint]] = {}
+
+        def wind_fn(lat: float, lon: float, tt: datetime) -> Optional[MetPoint]:
+            key = (_grid_round(lat), _grid_round(lon))
+            if key not in cache:
+                cache[key] = self.series_window(lat, lon, t)
+            return nearest_in_time(cache[key], tt)
+
+        return wind_fn
+
     def wind_at(self, lat: float, lon: float, t: datetime) -> Optional[MetPoint]:
         """Nearest-in-time MetPoint at a point — used by the trajectory sampler."""
-        series = self.series(lat, lon, past_days=3, forecast_days=1)
-        return nearest_in_time(series, t)
+        return nearest_in_time(self.series_window(lat, lon, t), t)
 
     def fetch(self, **kwargs: Any) -> list[MetPoint]:
         lat = kwargs.get("lat")

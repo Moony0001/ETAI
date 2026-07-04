@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # allow `python scripts/smoke_test.py` from the repo root
@@ -149,9 +150,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="vayulens Delhi smoke test")
     parser.add_argument("--ward", default=None, help="ward_id (default: central Delhi)")
     parser.add_argument("--no-persist", action="store_true", help="skip DuckDB writes")
+    parser.add_argument(
+        "--date",
+        default=None,
+        help="analyse a past day YYYY-MM-DD (uses REAL ERA5 archive wind). "
+        "Try a stubble episode e.g. --date 2024-11-08 to light up the "
+        "Delhi->Punjab corridor.",
+    )
     args = parser.parse_args()
 
     _print_keys()
+
+    t = None
+    if args.date:
+        t = datetime.strptime(args.date, "%Y-%m-%d").replace(
+            hour=10, tzinfo=timezone.utc
+        )
+        print(f"  Analysing historical day: {args.date} (real ERA5 archive wind)")
 
     geo = GeoDataAdapter()
     ward_id = args.ward
@@ -160,7 +175,7 @@ def main() -> int:
         ward_id = ward.ward_id if ward else None
 
     print("  Running pipeline (fetch -> enrich -> attribute)...")
-    res = run_attribution(ward_id=ward_id, persist=not args.no_persist)
+    res = run_attribution(ward_id=ward_id, t=t, persist=not args.no_persist)
 
     _print_attribution(res)
     _print_trajectory(res)

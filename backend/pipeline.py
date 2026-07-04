@@ -208,15 +208,15 @@ def _synthetic_fires_along_path(path: list[TrajectoryStep], t: datetime) -> list
     synthetic. With a real FIRMS_MAP_KEY + NW winter winds these are replaced by
     genuine Punjab/Haryana stubble detections.
     """
-    if len(path) < 13:
+    if len(path) < 8:
         return []
     origin = path[0]
     far = path[-1]
-    if haversine_km(origin.lat, origin.lon, far.lat, far.lon) < 60:
+    if haversine_km(origin.lat, origin.lon, far.lat, far.lon) < 30:
         return []  # calm/short path — no honest corridor to seed
     rng = random.Random(20260704)
     fires: list[Fire] = []
-    for node in path[12:]:  # upwind half only
+    for node in path[len(path) // 2:]:  # upwind half only
         for _ in range(2):
             fires.append(
                 Fire(
@@ -258,11 +258,11 @@ def run_attribution(
 
     # --- Meteorology (real, keyless) + back-trajectory -------------------
     met = OpenMeteoAdapter()
-    met_series = met.series(ward.lat, ward.lon, past_days=3, forecast_days=1)
+    met_series = met.series_window(ward.lat, ward.lon, t)
     ward_met = nearest_in_time(met_series, t)
     if ward_met is None:
         notes.append("Open-Meteo returned no wind; trajectory unavailable.")
-    path = back_trajectory(ward.lat, ward.lon, t, met.wind_at) if ward_met else []
+    path = back_trajectory(ward.lat, ward.lon, t, met.make_wind_fn(t)) if ward_met else []
 
     # --- Active fires (real FIRMS, else synthetic along path) ------------
     firms = FirmsAdapter()
@@ -302,8 +302,9 @@ def run_attribution(
         notes.append("OpenAQ key absent: using synthetic ground-sensor scenario.")
     elif not stations:
         raise RuntimeError("No ground stations and synthetic fallback disabled.")
-    elif not firms.available or data_source == "real" and any(f.synthetic for f in fires):
-        data_source = "partial" if data_source == "real" else data_source
+    elif not firms.available or any(f.synthetic for f in fires):
+        # real ground data, but a satellite/fire channel is missing or synthetic
+        data_source = "partial"
 
     latest = _latest_by_station(latest_readings)
     panel = _panel_stats(latest)
