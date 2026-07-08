@@ -67,17 +67,30 @@ uv run uvicorn backend.api:app --reload
 # http://127.0.0.1:8000/docs
 #   GET /health
 #   GET /wards
-#   GET /attribution/{ward_id}
-#   GET /trajectory/{ward_id}
+#   GET /attribution?date=YYYY-MM-DD   -> whole-city { meta, geojson } (map choropleth; cached per date)
+#   GET /attribution/{ward_id}?date=…  -> one ward's full WardAttribution
+#   GET /trajectory?ward_id=…&date=…   -> back-trajectory + contributing fires (GeoJSON)
+#   GET /trajectory/{ward_id}?date=…   -> same, path form
 ```
 
-### Run the frontend placeholder
+The batch `GET /attribution` fetches the shared snapshot (stations, fires, wind) **once
+per (city, date)** and attributes every ward from it, then caches the FeatureCollection
+in DuckDB keyed by date so demo re-runs are instant. `date` is optional everywhere and
+defaults to latest/today.
+
+### Run the frontend (command-centre map)
 
 ```bash
 cd frontend
 npm install
-npm run dev        # http://localhost:5173  (expects the API on :8000)
+npm run dev        # http://localhost:5173  (calls the API via the /api Vite proxy)
 ```
+
+Dark MapLibre + deck.gl. Ward choropleth coloured by **dominant source** (toggle to CPCB
+AQI severity), a click-through attribution panel, the Delhi→Punjab back-trajectory
+corridor, date presets for the Nov-2024 stubble window, and LIVE/DEMO provenance badges.
+API base is the `VITE_API_URL` env var (see `frontend/.env.example`); unset → the Vite
+`/api` proxy, so there's no CORS setup in dev.
 
 ---
 
@@ -138,19 +151,19 @@ defensible on purpose.
 ## What's real vs stubbed in this pass
 
 - **Real / runnable:** config, models, OpenAQ/FIRMS/Open-Meteo/geodata adapters,
-  baseline, features, trajectory, fingerprints, engine, DuckDB store, pipeline, API,
-  smoke test.
+  baseline, features, trajectory, fingerprints, engine, DuckDB store, pipeline, batch
+  city-wide attribution + CPCB AQI, FastAPI, and the deck.gl command-centre frontend.
 - **Stubbed (clear TODOs):** `tropomi.py` (needs `earthengine authenticate`; returns
-  `None` gracefully so the pipeline runs without it), the LightGBM forecast (persistence
-  works), and the frontend (renders one attribution + the trajectory).
+  `None` gracefully so the pipeline runs without it) and the LightGBM forecast
+  (persistence baseline works).
 
 ## Roadmap / TODO
 
 - Wire TROPOMI via GEE → UVAI/CO/SO2/NO2 columns flow straight into the fingerprints.
-- Replace synthetic fallback by adding `OPENAQ_API_KEY` + `FIRMS_MAP_KEY`.
-- Real 250-ward polygons in `data/geo/`.
-- Build out the deck.gl map (ward choropleth by dominant source + trajectory line).
+- Real 250-ward polygons in `data/geo/` (grid fallback works today).
 - Implement `LightGBMForecaster` for 6–24h source-resolved forecasts.
+- Enforcement ranking panel + LLM natural-language explanations (Anthropic key present).
+- Subtle wind-vector overlay sampled from the met field.
 
 > ⚠️ vayulens is a decision-support prototype. The receptor model is a defensible
 > heuristic, not a regulatory-grade chemical transport model.

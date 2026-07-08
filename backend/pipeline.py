@@ -42,6 +42,7 @@ from backend.enrichment.trajectory import (
     biomass_evidence,
     trajectory_geojson,
 )
+from backend.aqi import pm25_to_aqi
 from backend.models import Fire, MetPoint, Reading, Station, TrajectoryStep, WardAttribution
 from backend.store import db
 
@@ -59,6 +60,14 @@ class PipelineResult:
     fires: list[Fire] = field(default_factory=list)
     n_stations: int = 0
     n_fires: int = 0
+
+
+@dataclass
+class BatchResult:
+    """City-wide attribution snapshot: one GeoJSON FeatureCollection + metadata."""
+
+    meta: dict
+    geojson: dict
 
 
 # ---------------------------------------------------------------------------
@@ -404,3 +413,235 @@ def run_attribution(
         n_stations=len(stations),
         n_fires=len(fires),
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch attribution (whole-city snapshot for the map choropleth)
+# ---------------------------------------------------------------------------
+def _top_driver_text(attr: WardAttribution) -> str:
+    """One-line 'Primary driver: <reason>' string from the ranked drivers.
+
+    top_drivers entries look like 'biomass (41%): upwind active fires'; we keep
+    the human reason after the colon. When there is no positive local evidence
+    (everything went to regional background) we say so plainly.
+    """
+    if attr.excess <= 0:
+        return "Primary driver: no excess above the clean-day baseline"
+    if not attr.top_drivers:
+        return "Primary driver: regional background"
+    head = attr.top_drivers[0]
+    reason = head.split(": ", 1)[1] if ": " in head else head
+    return f"Primary driver: {reason}"
+
+
+def _ground_ready_station_histories(
+    openaq: OpenAQAdapter,
+    stations: list[Station],
+    t: datetime,
+    *,
+    fetch_history: bool,
+) -> dict[str, list[Reading]]:
+    """PM2.5 history per station for baselines, fetched ONCE for the whole city.
+
+    Best-effort: OpenAQ rate limits aggressively, so any station whose history is
+    unavailable simply falls back to the clean-day baseline downstream (identical
+    to the single-ward path). Disk-cached, so repeat runs are cheap.
+    """
+    if not fetch_history or not openaq.available:
+        return {}
+    dfrom = t - timedelta(days=BASELINE_WINDOW_DAYS)
+    histories: dict[str, list[Reading]] = {}
+    for st in stations:
+        sid_sensor = st.sensors.get("pm25")
+        if sid_sensor is None:
+            continue
+        hist = openaq.history(sid_sensor, "pm25", st, dfrom, t)
+        if hist:
+            histories[st.station_id] = hist
+    return histories
+
+
+def run_attribution_batch(
+    t: Optional[datetime] = None,
+    *,
+    allow_synthetic: bool = True,
+    fetch_history: bool = False,
+    allow_network_proximity: bool = False,
+) -> BatchResult:
+    """Fetch the shared (city, date) snapshot ONCE, then attribute every ward.
+
+    Shared data — ground stations + latest readings, active fires, the wind
+    field, per-station baselines and the regional common-mode — is pulled a
+    single time. The per-ward loop then only does cheap local work (station
+    assignment, back-trajectory, feature build, attribution). This is the
+    fetch-once/attribute-many refactor the map needs; nothing in the attribution
+    math changes, it is just hoisted out of the per-ward path.
+
+    Baseline policy: `fetch_history` defaults to False. OpenAQ's per-sensor
+    /hours endpoint rate-limits hard and returns nothing for older dates, so the
+    city sweep uses the clean-day fallback baseline (identical to what the
+    single-ward path falls back to in practice). The /attribution/{ward_id}
+    endpoint still does the deeper per-station history fetch for a precise
+    baseline. `allow_network_proximity` is likewise False so 2700 cells never
+    fan out into Overpass calls; proximity resolves from cache or the
+    distance-to-centre heuristic.
+    """
+    from shapely.geometry import mapping
+
+    t = (t or datetime.now(timezone.utc)).replace(minute=0, second=0, microsecond=0)
+
+    geo = GeoDataAdapter()
+    wards = geo.load_wards()
+    if not wards:
+        raise RuntimeError("No wards available (grid generation failed).")
+
+    # --- Wind field (real, keyless) -------------------------------------
+    met = OpenMeteoAdapter()
+    wind_fn = met.make_wind_fn(t)
+
+    # --- Active fires (shared): real FIRMS, else synthetic along a reference path
+    firms = FirmsAdapter()
+    fires: list[Fire] = []
+    fires_live = False
+    if firms.available:
+        w, s, e, n = DELHI_BBOX
+        wide = (w - 3.0, s - 0.5, e + 0.5, n + 2.5)
+        fires = firms.fetch(bbox=wide, day_range=3)
+        fires_live = bool(fires)
+    if not fires and allow_synthetic:
+        ref_path = back_trajectory(*DELHI_CENTER, t, wind_fn)
+        fires = _synthetic_fires_along_path(ref_path, t)
+
+    # --- Ground sensors (shared): real OpenAQ, else synthetic scenario ---
+    openaq = OpenAQAdapter()
+    ground_live = False
+    stations: list[Station] = []
+    latest_readings: list[Reading] = []
+    pm25_history: dict[str, list[Reading]] = {}
+
+    if openaq.available:
+        stations = openaq.list_stations(bbox=DELHI_BBOX)
+        for st in stations:
+            latest_readings.extend(openaq.latest_for_station(st))
+        ground_live = bool(stations)
+
+    if not stations and allow_synthetic:
+        stations, latest_readings, pm25_history = _synthetic_ground(t)
+    elif ground_live:
+        pm25_history = _ground_ready_station_histories(
+            openaq, stations, t, fetch_history=fetch_history
+        )
+
+    if ground_live and fires_live:
+        data_source = "real"
+    elif ground_live:
+        data_source = "partial"
+    else:
+        data_source = "synthetic_fallback"
+
+    latest = _latest_by_station(latest_readings)
+    panel = _panel_stats(latest)
+
+    # --- Regional common-mode (city-wide, computed ONCE) -----------------
+    station_baselines: dict[str, float] = {
+        st.station_id: station_baseline(pm25_history.get(st.station_id, []), "pm25")
+        for st in stations
+    }
+    station_excesses: dict[str, float] = {}
+    for st in stations:
+        obs = latest.get(st.station_id, {}).get("pm25")
+        if obs is None:
+            continue
+        station_excesses[st.station_id] = compute_excess(
+            obs, station_baselines[st.station_id]
+        )
+    reg_floor = regional_floor(station_excesses)
+
+    tropomi_adapter = TropomiAdapter()  # built once; sample() returns None if unauth
+
+    # --- Per-ward loop over the single snapshot --------------------------
+    features_out: list[dict] = []
+    for ward in wards:
+        assigned = _assign_stations(ward, stations)
+        ward_values = _ward_values(assigned, latest)
+        pm25_obs = ward_values.get("pm25")
+        if pm25_obs is None:
+            pm25_obs = 0.0
+
+        ward_hist: list[Reading] = []
+        for st in assigned:
+            ward_hist.extend(pm25_history.get(st.station_id, []))
+        pm25_baseline = station_baseline(ward_hist, "pm25")
+        excess = compute_excess(pm25_obs, pm25_baseline)
+        window_pm25 = [(r.timestamp, r.value) for r in ward_hist]
+
+        ward_met = wind_fn(ward.lat, ward.lon, t)
+        path = back_trajectory(ward.lat, ward.lon, t, wind_fn) if ward_met else []
+        fire_score_raw, _contribs = biomass_evidence(path, fires, t0=t)
+
+        proximity = geo.proximity(ward, allow_network=allow_network_proximity)
+        tropomi = tropomi_adapter.sample(ward.lat, ward.lon, t)
+
+        bundle = build_features(
+            FeatureInputs(
+                t=t,
+                ward_values=ward_values,
+                panel_stats=panel,
+                met=ward_met,
+                window_pm25=window_pm25,
+                fire_score_raw=fire_score_raw,
+                proximity=proximity,
+                ward_excess=excess,
+                regional_floor=reg_floor,
+                tropomi=tropomi,
+            )
+        )
+        attr = attribute(
+            ward_id=ward.ward_id,
+            ward_name=ward.ward_name,
+            lat=ward.lat,
+            lon=ward.lon,
+            t=t,
+            pm25_obs=pm25_obs,
+            pm25_baseline=pm25_baseline,
+            excess=excess,
+            bundle=bundle,
+            data_source=data_source,
+            notes=[],
+        )
+        aqi = pm25_to_aqi(attr.pm25_obs)
+        features_out.append(
+            {
+                "type": "Feature",
+                "geometry": mapping(ward.geometry),
+                "properties": {
+                    "ward_id": attr.ward_id,
+                    "name": attr.ward_name,
+                    "pm25": attr.pm25_obs,
+                    "aqi": aqi.aqi,
+                    "aqi_band": aqi.band,
+                    "excess": attr.excess,
+                    "shares": attr.shares,
+                    "masses": attr.masses,
+                    "confidence": attr.confidence,
+                    "top_driver_text": _top_driver_text(attr),
+                },
+            }
+        )
+
+    meta = {
+        "city": "Delhi",
+        "date": t.strftime("%Y-%m-%d"),
+        "timestamp": t.isoformat(),
+        "provenance": {
+            "ground": "live" if ground_live else "synthetic_fallback",
+            "fires": "live" if fires_live else "synthetic_fallback",
+            "wind": "live",
+        },
+        "station_count": len(stations),
+        "fire_count": len(fires),
+        "ward_count": len(features_out),
+        "is_grid": bool(wards and wards[0].is_grid),
+    }
+    geojson = {"type": "FeatureCollection", "features": features_out}
+    return BatchResult(meta=meta, geojson=geojson)

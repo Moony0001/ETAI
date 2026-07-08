@@ -196,8 +196,14 @@ class GeoDataAdapter:
     # ------------------------------------------------------------------
     # Proximity features via Overpass (cached, with heuristic fallback)
     # ------------------------------------------------------------------
-    def proximity(self, ward: Ward) -> dict[str, Any]:
-        """Return {road_proximity, construction_proximity, stack_proximity, source}."""
+    def proximity(self, ward: Ward, *, allow_network: bool = True) -> dict[str, Any]:
+        """Return {road_proximity, construction_proximity, stack_proximity, source}.
+
+        `allow_network=False` skips the live Overpass query and resolves from the
+        disk cache or the distance-to-centre heuristic instead. The batch
+        endpoint uses this so a full-city sweep never fires hundreds of Overpass
+        requests (which would rate-limit); single-ward calls keep the default.
+        """
         if ward._proximity is not None:
             return ward._proximity
         cached = self._read_prox_cache(ward.ward_id)
@@ -205,11 +211,14 @@ class GeoDataAdapter:
             ward._proximity = cached
             return cached
 
-        result = self._overpass_proximity(ward)
+        result = self._overpass_proximity(ward) if allow_network else None
         if result is None:
             result = self._heuristic_proximity(ward)
         ward._proximity = result
-        self._write_prox_cache(ward.ward_id, result)
+        # Only persist real Overpass results; heuristic fallbacks stay uncached so
+        # a later network-enabled call can still upgrade them.
+        if result.get("source") == "overpass":
+            self._write_prox_cache(ward.ward_id, result)
         return result
 
     def _overpass_proximity(self, ward: Ward) -> Optional[dict[str, Any]]:

@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS attributions (
     data_source VARCHAR, notes VARCHAR,
     PRIMARY KEY (ward_id, timestamp)
 );
+CREATE TABLE IF NOT EXISTS attribution_batches (
+    date VARCHAR PRIMARY KEY,
+    meta VARCHAR,
+    geojson VARCHAR,
+    created_at TIMESTAMP
+);
 """
 
 
@@ -135,6 +141,39 @@ def save_attribution(con: duckdb.DuckDBPyConnection, a: WardAttribution) -> None
         )
     except duckdb.Error as exc:  # pragma: no cover
         logger.warning("[store] save_attribution failed: %s", exc)
+
+
+def save_attribution_batch(
+    con: duckdb.DuckDBPyConnection, date: str, meta: dict, geojson: dict
+) -> None:
+    """Cache a whole-city batch result keyed by date so demo re-runs are instant."""
+    try:
+        con.execute(
+            "INSERT OR REPLACE INTO attribution_batches VALUES (?, ?, ?, ?)",
+            [date, json.dumps(meta), json.dumps(geojson), datetime.utcnow()],
+        )
+    except duckdb.Error as exc:  # pragma: no cover
+        logger.warning("[store] save_attribution_batch failed: %s", exc)
+
+
+def load_attribution_batch(
+    con: duckdb.DuckDBPyConnection, date: str
+) -> Optional[tuple[dict, dict]]:
+    """Return (meta, geojson) for a cached batch date, or None if not cached."""
+    try:
+        row = con.execute(
+            "SELECT meta, geojson FROM attribution_batches WHERE date = ?",
+            [date],
+        ).fetchone()
+    except duckdb.Error as exc:  # pragma: no cover
+        logger.warning("[store] load_attribution_batch failed: %s", exc)
+        return None
+    if not row:
+        return None
+    try:
+        return json.loads(row[0]), json.loads(row[1])
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def latest_attribution(
