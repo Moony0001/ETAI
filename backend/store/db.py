@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 import duckdb
@@ -53,6 +53,14 @@ CREATE TABLE IF NOT EXISTS attribution_batches (
     meta VARCHAR,
     geojson VARCHAR,
     created_at TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS trajectories (
+    ward_id VARCHAR,
+    date VARCHAR,
+    level VARCHAR,
+    payload VARCHAR,
+    created_at TIMESTAMP,
+    PRIMARY KEY (ward_id, date, level)
 );
 """
 
@@ -172,6 +180,38 @@ def load_attribution_batch(
         return None
     try:
         return json.loads(row[0]), json.loads(row[1])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def save_trajectory(
+    con: duckdb.DuckDBPyConnection, ward_id: str, date: str, level: str, payload: dict
+) -> None:
+    """Cache a trajectory response keyed by (ward_id, date, wind level)."""
+    try:
+        con.execute(
+            "INSERT OR REPLACE INTO trajectories VALUES (?, ?, ?, ?, ?)",
+            [ward_id, date, level, json.dumps(payload), datetime.now(timezone.utc)],
+        )
+    except duckdb.Error as exc:  # pragma: no cover
+        logger.warning("[store] save_trajectory failed: %s", exc)
+
+
+def load_trajectory(
+    con: duckdb.DuckDBPyConnection, ward_id: str, date: str, level: str
+) -> Optional[dict]:
+    try:
+        row = con.execute(
+            "SELECT payload FROM trajectories WHERE ward_id = ? AND date = ? AND level = ?",
+            [ward_id, date, level],
+        ).fetchone()
+    except duckdb.Error as exc:  # pragma: no cover
+        logger.warning("[store] load_trajectory failed: %s", exc)
+        return None
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
     except (json.JSONDecodeError, TypeError):
         return None
 

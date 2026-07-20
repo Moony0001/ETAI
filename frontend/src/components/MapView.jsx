@@ -121,13 +121,16 @@ export default function MapView({
           data: fires,
           pickable: true,
           getPosition: (f) => f.geometry.coordinates,
-          // radius grows with Fire Radiative Power (warm colour)
-          getRadius: (f) => Math.max(7, Math.sqrt(f.properties.frp || 1) * 3.5),
+          // radius grows with Fire Radiative Power (warm colour); kept small so a
+          // dense stubble field (~1000+ detections) reads as a belt, not one blob.
+          getRadius: (f) => Math.sqrt(f.properties.frp || 1) * 1.8,
           radiusUnits: "pixels",
-          getFillColor: [255, 138, 43, 225],
-          stroked: true,
+          radiusMinPixels: 2,
+          radiusMaxPixels: 14,
+          getFillColor: [255, 130, 40, 200],
+          stroked: fires.length < 120,
           getLineColor: [255, 90, 0, 255],
-          lineWidthMinPixels: 1.5,
+          lineWidthMinPixels: 1,
         })
       );
     }

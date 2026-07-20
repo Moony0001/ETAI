@@ -33,6 +33,7 @@ from backend.config import (
     DELHI_BBOX,
     DELHI_CENTER,
     PARAMETERS,
+    TRAJECTORY_PRESSURE_LEVEL,
 )
 from backend.enrichment.baseline import excess as compute_excess
 from backend.enrichment.baseline import regional_floor, station_baseline
@@ -271,21 +272,31 @@ def run_attribution(
     ward_met = nearest_in_time(met_series, t)
     if ward_met is None:
         notes.append("Open-Meteo returned no wind; trajectory unavailable.")
-    path = back_trajectory(ward.lat, ward.lon, t, met.make_wind_fn(t)) if ward_met else []
+    # Ward features use surface met (rh etc.); the trajectory advects through the
+    # boundary layer (config TRAJECTORY_PRESSURE_LEVEL) for realistic transport.
+    path = (
+        back_trajectory(ward.lat, ward.lon, t, met.make_wind_fn(t, level=TRAJECTORY_PRESSURE_LEVEL))
+        if ward_met
+        else []
+    )
 
-    # --- Active fires (real FIRMS, else synthetic along path) ------------
+    # --- Active fires (real FIRMS: NRT or SP archive, else synthetic) ----
     firms = FirmsAdapter()
     fires: list[Fire] = []
+    fires_provenance = "none"
     if firms.available:
         # widen the box NW toward the stubble belt
         w, s, e, n = DELHI_BBOX
         wide = (w - 3.0, s - 0.5, e + 0.5, n + 2.5)
-        fires = firms.fetch(bbox=wide, day_range=3)
+        fires, fires_provenance = firms.fetch_for_date(wide, t)
     if not fires and allow_synthetic:
         fires = _synthetic_fires_along_path(path, t)
         if fires:
-            notes.append(f"FIRMS key absent: seeded {len(fires)} synthetic fires "
+            fires_provenance = "synthetic_fallback"
+            notes.append(f"FIRMS unavailable for this date: seeded {len(fires)} synthetic fires "
                          "upwind along the real trajectory (demo).")
+    if fires_provenance == "archive":
+        notes.append("Fires: FIRMS standard-processing archive (science-quality) for this date.")
 
     fire_score_raw, contributors = biomass_evidence(path, fires, t0=t)
 
@@ -416,6 +427,80 @@ def run_attribution(
 
 
 # ---------------------------------------------------------------------------
+# Fast trajectory-only path (the corridor money-shot, no attribution)
+# ---------------------------------------------------------------------------
+def run_trajectory(
+    ward: Ward,
+    t: Optional[datetime] = None,
+    level: Optional[str] = None,
+    *,
+    use_cache: bool = True,
+) -> dict:
+    """Back-trajectory + contributing fires for one ward, WITHOUT the attribution
+    pipeline (no ground fetch, no baseline, no DuckDB attribution writes).
+
+    This is what the /trajectory endpoint calls — it only needs the wind field and
+    the fires, so it is ~5x faster than routing through run_attribution. Cached in
+    DuckDB per (ward_id, date, level) so a re-click is instant.
+    """
+    t = (t or datetime.now(timezone.utc)).replace(minute=0, second=0, microsecond=0)
+    level = level or TRAJECTORY_PRESSURE_LEVEL
+    date_str = t.strftime("%Y-%m-%d")
+
+    if use_cache:
+        try:
+            con = db.connect()
+            cached = db.load_trajectory(con, ward.ward_id, date_str, level)
+            con.close()
+            if cached is not None:
+                return {**cached, "cached": True}
+        except Exception as exc:  # noqa: BLE001 - cache is best-effort
+            logger.warning("[pipeline] trajectory cache read skipped: %s", exc)
+
+    met = OpenMeteoAdapter()
+    wind_fn = met.make_wind_fn(t, level=level)
+    m0 = wind_fn(ward.lat, ward.lon, t)
+    actual_level = m0.level if m0 else level
+    path = back_trajectory(ward.lat, ward.lon, t, wind_fn) if m0 else []
+
+    firms = FirmsAdapter()
+    fires: list[Fire] = []
+    fires_provenance = "none"
+    if firms.available:
+        w, s, e, n = DELHI_BBOX
+        wide = (w - 3.0, s - 0.5, e + 0.5, n + 2.5)
+        fires, fires_provenance = firms.fetch_for_date(wide, t)
+    if not fires:
+        fires = _synthetic_fires_along_path(path, t)
+        if fires:
+            fires_provenance = "synthetic_fallback"
+
+    _score, contributors = biomass_evidence(path, fires, t0=t, with_contributors=True)
+    transport_km = (
+        haversine_km(path[0].lat, path[0].lon, path[-1].lat, path[-1].lon)
+        if len(path) >= 2
+        else 0.0
+    )
+    payload = {
+        "ward_id": ward.ward_id,
+        "date": date_str,
+        "level": actual_level,
+        "fires_provenance": fires_provenance,
+        "hours": len(path) - 1 if path else 0,
+        "n_contributing_fires": len(contributors),
+        "transport_km": round(transport_km, 1),
+        "geojson": trajectory_geojson(path, contributors),
+    }
+    try:
+        con = db.connect()
+        db.save_trajectory(con, ward.ward_id, date_str, actual_level, payload)
+        con.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[pipeline] trajectory cache write skipped: %s", exc)
+    return {**payload, "cached": False}
+
+
+# ---------------------------------------------------------------------------
 # Batch attribution (whole-city snapshot for the map choropleth)
 # ---------------------------------------------------------------------------
 def _top_driver_text(attr: WardAttribution) -> str:
@@ -496,21 +581,26 @@ def run_attribution_batch(
         raise RuntimeError("No wards available (grid generation failed).")
 
     # --- Wind field (real, keyless) -------------------------------------
+    # Surface wind for ward features (rh presence); boundary-layer wind for the
+    # trajectory so smoke transport reaches the real upwind source region.
     met = OpenMeteoAdapter()
-    wind_fn = met.make_wind_fn(t)
+    surface_wind_fn = met.make_wind_fn(t)
+    traj_wind_fn = met.make_wind_fn(t, level=TRAJECTORY_PRESSURE_LEVEL)
 
-    # --- Active fires (shared): real FIRMS, else synthetic along a reference path
+    # --- Active fires (shared): real FIRMS (NRT or SP archive), else synthetic ---
     firms = FirmsAdapter()
     fires: list[Fire] = []
-    fires_live = False
+    fires_provenance = "none"
     if firms.available:
         w, s, e, n = DELHI_BBOX
         wide = (w - 3.0, s - 0.5, e + 0.5, n + 2.5)
-        fires = firms.fetch(bbox=wide, day_range=3)
-        fires_live = bool(fires)
+        fires, fires_provenance = firms.fetch_for_date(wide, t)
     if not fires and allow_synthetic:
-        ref_path = back_trajectory(*DELHI_CENTER, t, wind_fn)
+        ref_path = back_trajectory(*DELHI_CENTER, t, traj_wind_fn)
         fires = _synthetic_fires_along_path(ref_path, t)
+        if fires:
+            fires_provenance = "synthetic_fallback"
+    fires_live = fires_provenance in ("live", "archive")
 
     # --- Ground sensors (shared): real OpenAQ, else synthetic scenario ---
     openaq = OpenAQAdapter()
@@ -575,9 +665,9 @@ def run_attribution_batch(
         excess = compute_excess(pm25_obs, pm25_baseline)
         window_pm25 = [(r.timestamp, r.value) for r in ward_hist]
 
-        ward_met = wind_fn(ward.lat, ward.lon, t)
-        path = back_trajectory(ward.lat, ward.lon, t, wind_fn) if ward_met else []
-        fire_score_raw, _contribs = biomass_evidence(path, fires, t0=t)
+        ward_met = surface_wind_fn(ward.lat, ward.lon, t)
+        path = back_trajectory(ward.lat, ward.lon, t, traj_wind_fn) if ward_met else []
+        fire_score_raw, _contribs = biomass_evidence(path, fires, t0=t, with_contributors=False)
 
         proximity = geo.proximity(ward, allow_network=allow_network_proximity)
         tropomi = tropomi_adapter.sample(ward.lat, ward.lon, t)
@@ -635,9 +725,10 @@ def run_attribution_batch(
         "timestamp": t.isoformat(),
         "provenance": {
             "ground": "live" if ground_live else "synthetic_fallback",
-            "fires": "live" if fires_live else "synthetic_fallback",
+            "fires": fires_provenance,
             "wind": "live",
         },
+        "wind_level": TRAJECTORY_PRESSURE_LEVEL,
         "station_count": len(stations),
         "fire_count": len(fires),
         "ward_count": len(features_out),

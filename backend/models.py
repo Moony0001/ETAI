@@ -67,6 +67,7 @@ class MetPoint(BaseModel):
     rh: Optional[float] = None     # relative humidity, %
     temp: Optional[float] = None   # 2 m temperature, °C
     precip: Optional[float] = None # mm
+    level: str = "10m"             # wind level this point's u/v are sampled at
     synthetic: bool = False
 
 

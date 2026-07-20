@@ -1,9 +1,10 @@
-import { provenanceLabel } from "../lib/format";
+import { provenanceLabel, provenanceClass } from "../lib/format";
 
-// Honesty asset: reads meta.provenance and shows LIVE/DEMO per channel. When the
-// OpenAQ + FIRMS keys are present the backend reports "live" and these flip to
-// LIVE automatically — no code change here.
-export default function ProvenanceBadges({ provenance }) {
+// Honesty asset: reads meta.provenance and shows LIVE / ARCHIVE / DEMO per
+// channel. "archive" = FIRMS science-quality historical fires (real data, not a
+// demo). When keys are present the backend reports live/archive and these flip
+// automatically — no code change here.
+export default function ProvenanceBadges({ provenance, windLevel }) {
   if (!provenance) return null;
   const channels = [
     ["Ground", provenance.ground],
@@ -12,15 +13,17 @@ export default function ProvenanceBadges({ provenance }) {
   ];
   return (
     <div className="badges">
-      {channels.map(([name, value]) => {
-        const live = value === "live";
-        return (
-          <span key={name} className={`badge ${live ? "live" : "demo"}`} title={`${name}: ${value}`}>
-            <i className="dot" />
-            {name}: {provenanceLabel(value)}
-          </span>
-        );
-      })}
+      {channels.map(([name, value]) => (
+        <span
+          key={name}
+          className={`badge ${provenanceClass(value)}`}
+          title={name === "Wind" && windLevel ? `Wind: ${value} · ${windLevel}` : `${name}: ${value}`}
+        >
+          <i className="dot" />
+          {name}: {provenanceLabel(value)}
+          {name === "Wind" && windLevel ? ` · ${windLevel}` : ""}
+        </span>
+      ))}
     </div>
   );
 }

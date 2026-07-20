@@ -160,6 +160,15 @@ button {
   background: var(--good);
   box-shadow: 0 0 6px var(--good);
 }
+.badge.archive {
+  color: #bcd8f5;
+  border-color: #274b6e;
+  background: #101c28;
+}
+.badge.archive .dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
 .badge.demo {
   color: #f6dfa0;
   border-color: #5a4a1f;

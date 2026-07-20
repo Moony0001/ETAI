@@ -19,6 +19,7 @@ from backend.adapters.base import AbstractSourceAdapter
 from backend.config import (
     OPENMETEO_ARCHIVE_URL,
     OPENMETEO_FORECAST_URL,
+    OPENMETEO_HISTORICAL_FORECAST_URL,
 )
 from backend.models import MetPoint
 
@@ -142,14 +143,88 @@ class OpenMeteoAdapter(AbstractSourceAdapter):
         end = (t + timedelta(days=1)).strftime("%Y-%m-%d")
         return self.series(lat, lon, archive=True, start_date=start, end_date=end)
 
-    def make_wind_fn(self, t: datetime):
-        """Return wind_fn(lat, lon, tt) for the trajectory, caching per grid cell."""
+    # ------------------------------------------------------------------
+    def level_series_window(
+        self, lat: float, lon: float, t: datetime, level: str
+    ) -> list[MetPoint]:
+        """Hourly wind at a pressure level (e.g. '850hPa') around time t.
+
+        ERA5 archive only exposes surface winds, so pressure-level winds for
+        historical dates come from the Historical Forecast API (archived forecast
+        runs, 2022-present); recent dates use the forecast endpoint. If the level
+        is unavailable (older than the archive, or a gap), we fall back to 10 m so
+        the trajectory always advects on *some* real wind.
+        """
+        if not level or level == "10m":
+            return self.series_window(lat, lon, t)
+
+        glat, glon = _grid_round(lat), _grid_round(lon)
+        spd_var, dir_var = f"wind_speed_{level}", f"wind_direction_{level}"
+        params: dict[str, Any] = {
+            "latitude": glat,
+            "longitude": glon,
+            "hourly": f"{spd_var},{dir_var}",
+            "wind_speed_unit": "ms",
+            "timezone": "UTC",
+        }
+        age_days = (datetime.now(timezone.utc) - t).days
+        if age_days <= 2:
+            url = OPENMETEO_FORECAST_URL
+            params["past_days"] = min(92, max(3, age_days + 2))
+            params["forecast_days"] = 1
+        else:
+            url = OPENMETEO_HISTORICAL_FORECAST_URL
+            params["start_date"] = (t - timedelta(days=2)).strftime("%Y-%m-%d")
+            params["end_date"] = (t + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        data = self.get_json(url, params=params)
+        pts = self._parse_level(data, glat, glon, spd_var, dir_var, level) if data else []
+        if not pts:
+            logger.warning(
+                "[openmeteo] %s wind unavailable at %.2f,%.2f (t=%s) — falling back to 10m.",
+                level, glat, glon, t.date(),
+            )
+            return self.series_window(lat, lon, t)
+        return pts
+
+    @staticmethod
+    def _parse_level(
+        data: dict, glat: float, glon: float, spd_var: str, dir_var: str, level: str
+    ) -> list[MetPoint]:
+        hourly = data.get("hourly") or {}
+        times = hourly.get("time") or []
+        out: list[MetPoint] = []
+        for i, tstr in enumerate(times):
+            try:
+                ts = datetime.fromisoformat(tstr).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            speed = _at(hourly.get(spd_var), i)
+            wdir = _at(hourly.get(dir_var), i)
+            if speed is None or wdir is None:
+                continue
+            u, v = wind_components(speed, wdir)
+            out.append(
+                MetPoint(
+                    lat=glat, lon=glon, timestamp=ts,
+                    wind_speed=speed, wind_dir=wdir, u=u, v=v, level=level,
+                )
+            )
+        return out
+
+    def make_wind_fn(self, t: datetime, level: Optional[str] = None):
+        """Return wind_fn(lat, lon, tt) for the trajectory, caching per grid cell.
+
+        `level` picks the wind level (default 10 m surface). A pressure level like
+        '850hPa' advects the parcel through the boundary layer for realistic
+        long-range smoke transport; it falls back to 10 m where unavailable.
+        """
         cache: dict[tuple[float, float], list[MetPoint]] = {}
 
         def wind_fn(lat: float, lon: float, tt: datetime) -> Optional[MetPoint]:
             key = (_grid_round(lat), _grid_round(lon))
             if key not in cache:
-                cache[key] = self.series_window(lat, lon, t)
+                cache[key] = self.level_series_window(lat, lon, t, level or "10m")
             return nearest_in_time(cache[key], tt)
 
         return wind_fn

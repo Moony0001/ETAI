@@ -24,9 +24,14 @@ from backend.adapters.firms import FirmsAdapter
 from backend.adapters.geodata import GeoDataAdapter
 from backend.adapters.openaq import OpenAQAdapter
 from backend.adapters.tropomi import TropomiAdapter
-from backend.config import DELHI_BBOX, DELHI_CENTER
+from backend.config import (
+    DELHI_BBOX,
+    DELHI_CENTER,
+    TRAJECTORY_LEVELS_AVAILABLE,
+    TRAJECTORY_PRESSURE_LEVEL,
+)
 from backend.models import WardAttribution, WardSummary
-from backend.pipeline import run_attribution, run_attribution_batch
+from backend.pipeline import run_attribution, run_attribution_batch, run_trajectory
 from backend.store import db
 
 logging.basicConfig(level=logging.INFO)
@@ -138,25 +143,27 @@ def attribution(
     return run_attribution(ward_id=ward_id, t=_parse_date(date)).attribution
 
 
-def _trajectory_response(ward_id: str, t: Optional[datetime]) -> dict:
-    result = run_attribution(ward_id=ward_id, t=t)
-    return {
-        "ward_id": ward_id,
-        "date": (t or datetime.now(timezone.utc)).strftime("%Y-%m-%d"),
-        "hours": len(result.path) - 1 if result.path else 0,
-        "n_contributing_fires": len(result.contributors),
-        "geojson": result.trajectory_geojson,
-    }
+def _resolve_level(level: Optional[str]) -> str:
+    if not level:
+        return TRAJECTORY_PRESSURE_LEVEL
+    if level not in TRAJECTORY_LEVELS_AVAILABLE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bad level '{level}'; expected one of {list(TRAJECTORY_LEVELS_AVAILABLE)}",
+        )
+    return level
 
 
 @app.get("/trajectory/{ward_id}")
 def trajectory(
     ward_id: str,
     date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest/today"),
+    level: Optional[str] = Query(None, description="Wind level, e.g. 850hPa or 10m"),
 ) -> dict:
-    if _geo.get_ward(ward_id) is None:
+    ward = _geo.get_ward(ward_id)
+    if ward is None:
         raise HTTPException(status_code=404, detail=f"Unknown ward_id '{ward_id}'")
-    return _trajectory_response(ward_id, _parse_date(date))
+    return run_trajectory(ward, _parse_date(date), _resolve_level(level))
 
 
 @app.get("/trajectory")
@@ -165,17 +172,25 @@ def trajectory_default(
     lat: Optional[float] = Query(None, description="Point latitude (with lon)"),
     lon: Optional[float] = Query(None, description="Point longitude (with lat)"),
     date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest/today"),
+    level: Optional[str] = Query(None, description="Wind level, e.g. 850hPa (default) or 10m"),
 ) -> dict:
-    """Back-trajectory for an explicit ward, a lat/lon point, or the city centre."""
+    """Back-trajectory for an explicit ward, a lat/lon point, or the city centre.
+
+    `level` picks the advection wind level so a judge can compare 10 m vs 850 hPa
+    live. Uses the fast trajectory-only path (no attribution) — cached per
+    (ward, date, level).
+    """
     t = _parse_date(date)
+    lvl = _resolve_level(level)
     if ward_id:
-        if _geo.get_ward(ward_id) is None:
+        ward = _geo.get_ward(ward_id)
+        if ward is None:
             raise HTTPException(status_code=404, detail=f"Unknown ward_id '{ward_id}'")
-        return _trajectory_response(ward_id, t)
+        return run_trajectory(ward, t, lvl)
     if lat is not None and lon is not None:
         ward = _geo.ward_at(lat, lon)
         if ward is None:
             raise HTTPException(status_code=404, detail="No ward near that point")
-        return _trajectory_response(ward.ward_id, t)
+        return run_trajectory(ward, t, lvl)
     ward = _geo.ward_at(*DELHI_CENTER) or _geo.load_wards()[0]
-    return _trajectory_response(ward.ward_id, t)
+    return run_trajectory(ward, t, lvl)

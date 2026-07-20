@@ -2,8 +2,8 @@ import ProvenanceBadges from "./ProvenanceBadges";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const PRESETS = [
-  { label: "Nov 8 · episode", date: "2024-11-08" },
-  { label: "Nov 18 · NW corridor", date: "2024-11-18" },
+  { label: "Nov 8 · peak episode", date: "2024-11-08" },
+  { label: "Nov 18 · corridor", date: "2024-11-18" },
 ];
 
 export default function Header({ date, onDateChange, colorMode, onColorModeChange, meta, loading }) {
@@ -46,7 +46,7 @@ export default function Header({ date, onDateChange, colorMode, onColorModeChang
             AQI
           </button>
         </div>
-        <ProvenanceBadges provenance={meta?.provenance} />
+        <ProvenanceBadges provenance={meta?.provenance} windLevel={meta?.wind_level} />
       </div>
     </header>
   );

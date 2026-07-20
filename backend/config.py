@@ -41,9 +41,16 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
 OPENAQ_BASE_URL = os.getenv("OPENAQ_BASE_URL", "https://api.openaq.org/v3")
 FIRMS_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
-FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")
+FIRMS_AVAILABILITY_URL = "https://firms.modaps.eosdis.nasa.gov/api/data_availability/csv"
+FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")          # near-real-time (~last 2 months)
+# Standard-processing (science-quality) VIIRS: the historical archive (2012-present,
+# ~2 months behind). Used automatically for episode dates the NRT feed can't reach.
+FIRMS_ARCHIVE_SOURCE = os.getenv("FIRMS_ARCHIVE_SOURCE", "VIIRS_SNPP_SP")
 OPENMETEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 OPENMETEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+# Archived FORECAST runs (2022-present) — the only Open-Meteo dataset that carries
+# pressure-level winds for historical dates. ERA5 archive exposes surface winds only.
+OPENMETEO_HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 
 HTTP_TIMEOUT_S = 30.0
 
@@ -173,6 +180,13 @@ TRAJECTORY_DT_H = 1
 FIRE_KERNEL_DIST_KM = 50.0        # exp(-dist/50)
 FIRE_KERNEL_AGE_H = 12.0          # exp(-age/12)
 FIRE_MAX_DIST_KM = 150.0          # ignore fires beyond this from the path (perf)
+
+# Advect the parcel through the BOUNDARY LAYER, not 10 m surface wind — surface
+# drag badly under-represents long-range smoke transport. ~850 hPa (~1.5 km) is the
+# usual level for stubble-smoke advection. Set to "10m" to disable. Sampled from
+# Open-Meteo pressure-level winds; falls back to 10 m wherever the level is absent.
+TRAJECTORY_PRESSURE_LEVEL = "850hPa"          # "10m" | "925hPa" | "900hPa" | "850hPa" | ...
+TRAJECTORY_LEVELS_AVAILABLE = ("10m", "925hPa", "900hPa", "850hPa", "700hPa")
 
 # --------------------------------------------------------------------------
 # Proximity (geodata) — search radii in metres

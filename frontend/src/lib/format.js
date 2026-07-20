@@ -33,9 +33,20 @@ export function confidenceBand(c) {
   return "High";
 }
 
-/** Provenance value -> badge label ("live" -> "LIVE", else "DEMO"). */
+/** Provenance value -> badge label. "archive" is honest real data, not DEMO. */
 export function provenanceLabel(value) {
-  return value === "live" ? "LIVE" : "DEMO";
+  if (value === "live") return "LIVE";
+  if (value === "archive") return "ARCHIVE";
+  if (value === "synthetic_fallback") return "DEMO";
+  return "—";
+}
+
+/** Provenance value -> badge style class. */
+export function provenanceClass(value) {
+  if (value === "live") return "live";
+  if (value === "archive") return "archive";
+  if (value === "synthetic_fallback") return "demo";
+  return "none";
 }
 
 export function pct(x) {

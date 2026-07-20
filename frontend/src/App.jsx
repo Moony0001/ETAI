@@ -106,10 +106,11 @@ export default function App() {
         });
         if (coords.length) fitTo(coords);
         const n = t.n_contributing_fires;
+        const prov = t.fires_provenance === "archive" ? " · archive fires" : "";
         setCorridor({
           loading: false,
           active: true,
-          info: `${t.hours} h back-trajectory · ${n} contributing fire${n === 1 ? "" : "s"}`,
+          info: `${t.transport_km} km on ${t.level} wind · ${n} contributing fire${n === 1 ? "" : "s"}${prov}`,
         });
       })
       .catch((e) => setCorridor({ loading: false, active: false, info: `corridor error: ${e.message || e}` }));
