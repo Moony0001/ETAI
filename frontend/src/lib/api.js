@@ -30,4 +30,12 @@ export function getTrajectory(wardId, date) {
   return getJSON(`/trajectory?${p.toString()}`);
 }
 
+/** Enforcement queue: wards ranked by locally-actionable pollution. */
+export function getEnforcement(date, limit = 20) {
+  const p = new URLSearchParams();
+  if (date) p.set("date", date);
+  p.set("limit", String(limit));
+  return getJSON(`/enforcement?${p.toString()}`);
+}
+
 export { API_BASE };

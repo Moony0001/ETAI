@@ -27,9 +27,11 @@ from backend.adapters.tropomi import TropomiAdapter
 from backend.config import (
     DELHI_BBOX,
     DELHI_CENTER,
+    ENFORCEMENT_LOCAL_SOURCES,
     TRAJECTORY_LEVELS_AVAILABLE,
     TRAJECTORY_PRESSURE_LEVEL,
 )
+from backend.enforcement import rank_enforcement
 from backend.models import WardAttribution, WardSummary
 from backend.pipeline import run_attribution, run_attribution_batch, run_trajectory
 from backend.store import db
@@ -92,6 +94,39 @@ def wards(limit: int = Query(500, ge=1, le=5000)) -> list[WardSummary]:
     return [w.summary() for w in _geo.load_wards()[:limit]]
 
 
+def _get_or_compute_batch(
+    t: Optional[datetime], date_str: str, refresh: bool = False
+) -> tuple[dict, dict, bool]:
+    """Return (meta, geojson, cached) for a date — from the DuckDB cache if present
+    (and not refreshing), else compute the whole-city batch once and cache it.
+
+    Shared by /attribution and /enforcement so the enforcement queue never
+    triggers a second 2,700-cell sweep.
+    """
+    con = None
+    try:
+        con = db.connect()
+        if not refresh:
+            cached = db.load_attribution_batch(con, date_str)
+            if cached is not None:
+                meta, geojson = cached
+                return meta, geojson, True
+    except Exception as exc:  # noqa: BLE001 - cache is best-effort
+        logger.warning("[api] batch cache read skipped: %s", exc)
+
+    result = run_attribution_batch(t=t)
+    try:
+        if con is None:
+            con = db.connect()
+        db.save_attribution_batch(con, date_str, result.meta, result.geojson)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[api] batch cache write skipped: %s", exc)
+    finally:
+        if con is not None:
+            con.close()
+    return result.meta, result.geojson, False
+
+
 @app.get("/attribution")
 def attribution_batch(
     date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest/today"),
@@ -106,31 +141,37 @@ def attribution_batch(
     """
     t = _parse_date(date)
     date_str = (t or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    meta, geojson, cached = _get_or_compute_batch(t, date_str, refresh)
+    return {"meta": {**meta, "cached": cached}, "geojson": geojson}
 
-    con = None
-    try:
-        con = db.connect()
-        if not refresh:
-            cached = db.load_attribution_batch(con, date_str)
-            if cached is not None:
-                meta, geojson = cached
-                meta = {**meta, "cached": True}
-                return {"meta": meta, "geojson": geojson}
-    except Exception as exc:  # noqa: BLE001 - cache is best-effort
-        logger.warning("[api] batch cache read skipped: %s", exc)
 
-    result = run_attribution_batch(t=t)
-    try:
-        if con is None:
-            con = db.connect()
-        db.save_attribution_batch(con, date_str, result.meta, result.geojson)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[api] batch cache write skipped: %s", exc)
-    finally:
-        if con is not None:
-            con.close()
+@app.get("/enforcement")
+def enforcement(
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest/today"),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict:
+    """Wards ranked by locally-actionable pollution (not raw AQI).
 
-    return {"meta": {**result.meta, "cached": False}, "geojson": result.geojson}
+    Returns a prioritised `queue` (traffic/dust/industrial mass, confidence-
+    weighted, with a recommended action) plus a short `regional` contrast list of
+    biomass/regional-dominated wards that need coordination, not local enforcement.
+    Built from the same cached batch as /attribution.
+    """
+    t = _parse_date(date)
+    date_str = (t or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    meta, geojson, cached = _get_or_compute_batch(t, date_str)
+    queue, regional = rank_enforcement(geojson["features"], limit=limit)
+    return {
+        "meta": {
+            "city": meta.get("city", "Delhi"),
+            "date": meta.get("date", date_str),
+            "cached": cached,
+            "queued": len(queue),
+            "local_sources": list(ENFORCEMENT_LOCAL_SOURCES),
+        },
+        "queue": queue,
+        "regional": regional,
+    }
 
 
 @app.get("/attribution/{ward_id}", response_model=WardAttribution)

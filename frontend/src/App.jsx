@@ -4,7 +4,8 @@ import MapView from "./components/MapView";
 import SidePanel from "./components/SidePanel";
 import Legend from "./components/Legend";
 import Header from "./components/Header";
-import { getAttribution, getTrajectory } from "./lib/api";
+import EnforcementPanel from "./components/EnforcementPanel";
+import { getAttribution, getTrajectory, getEnforcement } from "./lib/api";
 
 const INITIAL_VIEW = { longitude: 77.15, latitude: 28.62, zoom: 9.1, pitch: 0, bearing: 0 };
 const DEFAULT_DATE = "2024-11-08"; // opens on the pre-cached stubble episode
@@ -22,6 +23,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [viewState, setViewState] = useState(INITIAL_VIEW);
+  const [enforcementOpen, setEnforcementOpen] = useState(false);
+  const [enforcement, setEnforcement] = useState({ data: null, loading: false, error: null });
   const wrapRef = useRef(null);
 
   // Refetch the whole-city snapshot whenever the date changes.
@@ -50,11 +53,56 @@ export default function App() {
     };
   }, [date]);
 
+  // Load the enforcement queue when the panel is open (and on date change).
+  useEffect(() => {
+    if (!enforcementOpen) return;
+    let cancelled = false;
+    setEnforcement((s) => ({ ...s, loading: true, error: null }));
+    getEnforcement(date, 20)
+      .then((d) => !cancelled && setEnforcement({ data: d, loading: false, error: null }))
+      .catch((e) => !cancelled && setEnforcement({ data: null, loading: false, error: String(e.message || e) }));
+    return () => {
+      cancelled = true;
+    };
+  }, [enforcementOpen, date]);
+
+  const flyToPoint = useCallback((lat, lon, zoom = 11) => {
+    if (lat == null || lon == null) return;
+    setViewState((v) => ({
+      ...v,
+      longitude: lon,
+      latitude: lat,
+      zoom,
+      transitionDuration: 900,
+      transitionInterpolator: new FlyToInterpolator({ speed: 1.6 }),
+    }));
+  }, []);
+
   const onWardClick = useCallback((props) => {
     setSelected(props);
     setTrajectory(null);
     setCorridor(NO_CORRIDOR);
   }, []);
+
+  const onToggleEnforcement = useCallback(() => {
+    setEnforcementOpen((open) => {
+      const next = !open;
+      if (next) setColorMode("action"); // surface the deploy-here hotspots
+      return next;
+    });
+  }, []);
+
+  // Selecting a queue/regional entry: pick that ward and fly to it.
+  const onSelectEnforcementWard = useCallback(
+    (entry) => {
+      setTrajectory(null);
+      setCorridor(NO_CORRIDOR);
+      const f = geojson?.features.find((x) => x.properties.ward_id === entry.ward_id);
+      if (f) setSelected(f.properties);
+      flyToPoint(entry.lat, entry.lon, 11.5);
+    },
+    [geojson, flyToPoint]
+  );
 
   const fitTo = useCallback((coords) => {
     const el = wrapRef.current;
@@ -130,8 +178,20 @@ export default function App() {
         onColorModeChange={setColorMode}
         meta={meta}
         loading={loading}
+        enforcementOpen={enforcementOpen}
+        onToggleEnforcement={onToggleEnforcement}
       />
       <div className="stage">
+        {enforcementOpen && (
+          <EnforcementPanel
+            data={enforcement.data}
+            loading={enforcement.loading}
+            error={enforcement.error}
+            selectedWardId={selected?.ward_id}
+            onSelectWard={onSelectEnforcementWard}
+            onClose={onToggleEnforcement}
+          />
+        )}
         <div className="map-wrap" ref={wrapRef}>
           <MapView
             geojson={geojson}

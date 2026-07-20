@@ -1,4 +1,19 @@
-import { SOURCE_ORDER } from "./palette";
+import { SOURCE_ORDER, ACTION_RAMP, ACTION_MAX_UGM3 } from "./palette";
+
+const LOCAL_SOURCES = ["traffic", "dust", "industrial"];
+
+/** µg/m³ of excess attributed to locally-enforceable sources (traffic+dust+industrial). */
+export function actionableMass(props) {
+  const m = props?.masses || {};
+  return LOCAL_SOURCES.reduce((s, k) => s + (m[k] || 0), 0);
+}
+
+/** Sequential heat colour [r,g,b] for an actionable-mass value. */
+export function actionColor(am) {
+  const t = Math.max(0, Math.min(1, (am || 0) / ACTION_MAX_UGM3));
+  const { lo, hi } = ACTION_RAMP;
+  return [0, 1, 2].map((i) => Math.round(lo[i] + (hi[i] - lo[i]) * t));
+}
 
 /** "#rrggbb" -> [r, g, b] for deck.gl colour accessors. */
 export function hexToRgb(hex) {

@@ -162,6 +162,33 @@ ATTRIBUTION_WEIGHTS: dict[str, dict[str, float]] = {
 SOURCES: tuple[str, ...] = ("biomass", "traffic", "dust", "industrial", "regional")
 
 # --------------------------------------------------------------------------
+# ENFORCEMENT RANKING  (monitoring -> intervention)
+# Ranks wards by pollution a LOCAL inspector can actually act on, not raw AQI.
+# Advected stubble smoke (biomass) and the shared regional floor are excluded —
+# a Delhi inspector can't fix a Punjab field. Weights here, never inline.
+# --------------------------------------------------------------------------
+# Sources a local body can enforce against (their attributed mass is "actionable").
+ENFORCEMENT_LOCAL_SOURCES: tuple[str, ...] = ("traffic", "dust", "industrial")
+# Sources that need REGIONAL coordination instead (not locally fixable).
+ENFORCEMENT_REGIONAL_SOURCES: tuple[str, ...] = ("biomass", "regional")
+# score = actionable_mass * ((1-w) + w*confidence);  w in [0,1].
+ENFORCEMENT_CONFIDENCE_WEIGHT = 1.0
+# A ward needs at least this much locally-attributable excess (µg/m³) to be queued.
+ENFORCEMENT_MIN_ACTIONABLE_UGM3 = 3.0
+# A ward counts as "regionally dominated" (advected, not locally fixable) when the
+# biomass+regional share is at least this. The regional list surfaces the worst
+# (highest-excess) such wards — the contrast to the enforcement queue.
+ENFORCEMENT_REGIONAL_DOMINANCE = 0.55
+# How many wards to surface in the "regional coordination" contrast list.
+ENFORCEMENT_REGIONAL_LIST_SIZE = 8
+# Recommended action per dominant local source.
+ENFORCEMENT_ACTIONS: dict[str, str] = {
+    "traffic": "PUC drive / congestion & idling enforcement",
+    "dust": "water-sprinkling + C&D site audit",
+    "industrial": "stack emission inspection",
+}
+
+# --------------------------------------------------------------------------
 # Confidence
 # --------------------------------------------------------------------------
 # confidence = W_PEAK * peakedness + W_COMPLETE * data_completeness

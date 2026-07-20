@@ -3,7 +3,7 @@ import DeckGL from "@deck.gl/react";
 import { GeoJsonLayer, ScatterplotLayer, PathLayer } from "@deck.gl/layers";
 import { Map } from "react-map-gl/maplibre";
 import { SOURCE_COLORS, AQI_BAND_COLORS } from "../lib/palette";
-import { hexToRgb, dominantSource } from "../lib/format";
+import { hexToRgb, dominantSource, actionableMass, actionColor } from "../lib/format";
 
 // Keyless dark basemap: the MapLibre demotiles vector source, restyled dark so
 // the choropleth reads as a command-centre overlay. No API key, no token.
@@ -30,6 +30,10 @@ function fillFor(props, colorMode) {
   if (colorMode === "aqi") {
     const c = AQI_BAND_COLORS[props.aqi_band];
     return c ? hexToRgb(c) : MUTED;
+  }
+  if (colorMode === "action") {
+    if (!props.excess || props.excess <= 0) return MUTED;
+    return actionColor(actionableMass(props));
   }
   if (!props.excess || props.excess <= 0) return MUTED;
   const dom = dominantSource(props.shares);

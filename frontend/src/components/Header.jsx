@@ -6,7 +6,22 @@ const PRESETS = [
   { label: "Nov 18 · corridor", date: "2024-11-18" },
 ];
 
-export default function Header({ date, onDateChange, colorMode, onColorModeChange, meta, loading }) {
+const COLOR_MODES = [
+  ["source", "Source"],
+  ["aqi", "AQI"],
+  ["action", "Action"],
+];
+
+export default function Header({
+  date,
+  onDateChange,
+  colorMode,
+  onColorModeChange,
+  meta,
+  loading,
+  enforcementOpen,
+  onToggleEnforcement,
+}) {
   return (
     <header className="topbar">
       <div className="brand">
@@ -38,13 +53,19 @@ export default function Header({ date, onDateChange, colorMode, onColorModeChang
       </div>
 
       <div className="topright">
+        <button
+          className={`enforce-toggle ${enforcementOpen ? "on" : ""}`}
+          onClick={onToggleEnforcement}
+          aria-pressed={enforcementOpen}
+        >
+          ⚑ Enforcement
+        </button>
         <div className="toggle" role="tablist" aria-label="Colour mode">
-          <button className={colorMode === "source" ? "on" : ""} onClick={() => onColorModeChange("source")}>
-            Source
-          </button>
-          <button className={colorMode === "aqi" ? "on" : ""} onClick={() => onColorModeChange("aqi")}>
-            AQI
-          </button>
+          {COLOR_MODES.map(([key, label]) => (
+            <button key={key} className={colorMode === key ? "on" : ""} onClick={() => onColorModeChange(key)}>
+              {label}
+            </button>
+          ))}
         </div>
         <ProvenanceBadges provenance={meta?.provenance} windLevel={meta?.wind_level} />
       </div>

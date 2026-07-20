@@ -34,3 +34,8 @@ export const AQI_BAND_COLORS = {
   "Very Poor": "#e93f33",
   Severe: "#af2d24",
 };
+
+// "Action" mode: a single-hue sequential heat ramp for locally-actionable mass —
+// dim slate (low) -> hot red (deploy here). Distinct from every source hue.
+export const ACTION_RAMP = { lo: [32, 40, 48], hi: [255, 77, 77] };
+export const ACTION_MAX_UGM3 = 120; // normalisation cap for the ramp/legend
