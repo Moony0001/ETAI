@@ -31,6 +31,7 @@ from backend.config import (
     TRAJECTORY_LEVELS_AVAILABLE,
     TRAJECTORY_PRESSURE_LEVEL,
 )
+from backend import narration
 from backend.enforcement import rank_enforcement
 from backend.models import WardAttribution, WardSummary
 from backend.pipeline import run_attribution, run_attribution_batch, run_trajectory
@@ -172,6 +173,65 @@ def enforcement(
         "queue": queue,
         "regional": regional,
     }
+
+
+@app.get("/narration/{ward_id}")
+def narration_ward(
+    ward_id: str,
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest/today"),
+) -> dict:
+    """Plain-language explanation of a ward's attribution (+ EN/HI health advisory).
+
+    Explains numbers the engine already produced; the LLM never computes them.
+    Cached in DuckDB per (ward, date). Falls back to deterministic text when the
+    Anthropic key is absent — never empty, never a stall.
+    """
+    t = _parse_date(date)
+    date_str = (t or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    con = None
+    try:
+        con = db.connect()
+        cached = db.load_narration(con, "ward", ward_id, date_str)
+        if cached is not None:
+            return {**cached, "cached": True}
+        _meta, geojson, _c = _get_or_compute_batch(t, date_str)
+        feat = next(
+            (f for f in geojson["features"] if f["properties"].get("ward_id") == ward_id), None
+        )
+        if feat is None:
+            raise HTTPException(status_code=404, detail=f"Unknown ward_id '{ward_id}'")
+        traj = db.load_trajectory(con, ward_id, date_str, TRAJECTORY_PRESSURE_LEVEL)
+        result = narration.ward_narration(feat["properties"], trajectory=traj)
+        db.save_narration(con, "ward", ward_id, date_str, result)
+        return {**result, "cached": False}
+    finally:
+        if con is not None:
+            con.close()
+
+
+@app.get("/enforcement/narration")
+def enforcement_narration(
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest/today"),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict:
+    """One-line rationale per queued ward. Cached per (date, limit); graceful fallback."""
+    t = _parse_date(date)
+    date_str = (t or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    key = f"limit{limit}"
+    con = None
+    try:
+        con = db.connect()
+        cached = db.load_narration(con, "enforcement", key, date_str)
+        if cached is not None:
+            return {**cached, "cached": True}
+        _meta, geojson, _c = _get_or_compute_batch(t, date_str)
+        queue, _regional = rank_enforcement(geojson["features"], limit=limit)
+        result = {"date": date_str, "rationales": narration.enforcement_rationales(queue)}
+        db.save_narration(con, "enforcement", key, date_str, result)
+        return {**result, "cached": False}
+    finally:
+        if con is not None:
+            con.close()
 
 
 @app.get("/attribution/{ward_id}", response_model=WardAttribution)

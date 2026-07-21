@@ -62,6 +62,14 @@ CREATE TABLE IF NOT EXISTS trajectories (
     created_at TIMESTAMP,
     PRIMARY KEY (ward_id, date, level)
 );
+CREATE TABLE IF NOT EXISTS narrations (
+    kind VARCHAR,
+    key VARCHAR,
+    date VARCHAR,
+    payload VARCHAR,
+    created_at TIMESTAMP,
+    PRIMARY KEY (kind, key, date)
+);
 """
 
 
@@ -207,6 +215,38 @@ def load_trajectory(
         ).fetchone()
     except duckdb.Error as exc:  # pragma: no cover
         logger.warning("[store] load_trajectory failed: %s", exc)
+        return None
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def save_narration(
+    con: duckdb.DuckDBPyConnection, kind: str, key: str, date: str, payload: dict
+) -> None:
+    """Cache an LLM narration keyed by (kind, key, date) — never regenerate on re-click."""
+    try:
+        con.execute(
+            "INSERT OR REPLACE INTO narrations VALUES (?, ?, ?, ?, ?)",
+            [kind, key, date, json.dumps(payload), datetime.now(timezone.utc)],
+        )
+    except duckdb.Error as exc:  # pragma: no cover
+        logger.warning("[store] save_narration failed: %s", exc)
+
+
+def load_narration(
+    con: duckdb.DuckDBPyConnection, kind: str, key: str, date: str
+) -> Optional[dict]:
+    try:
+        row = con.execute(
+            "SELECT payload FROM narrations WHERE kind = ? AND key = ? AND date = ?",
+            [kind, key, date],
+        ).fetchone()
+    except duckdb.Error as exc:  # pragma: no cover
+        logger.warning("[store] load_narration failed: %s", exc)
         return None
     if not row:
         return None

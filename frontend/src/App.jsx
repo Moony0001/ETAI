@@ -5,7 +5,7 @@ import SidePanel from "./components/SidePanel";
 import Legend from "./components/Legend";
 import Header from "./components/Header";
 import EnforcementPanel from "./components/EnforcementPanel";
-import { getAttribution, getTrajectory, getEnforcement } from "./lib/api";
+import { getAttribution, getTrajectory, getEnforcement, getEnforcementNarration } from "./lib/api";
 
 const INITIAL_VIEW = { longitude: 77.15, latitude: 28.62, zoom: 9.1, pitch: 0, bearing: 0 };
 const DEFAULT_DATE = "2024-11-08"; // opens on the pre-cached stubble episode
@@ -58,9 +58,15 @@ export default function App() {
     if (!enforcementOpen) return;
     let cancelled = false;
     setEnforcement((s) => ({ ...s, loading: true, error: null }));
-    getEnforcement(date, 20)
-      .then((d) => !cancelled && setEnforcement({ data: d, loading: false, error: null }))
-      .catch((e) => !cancelled && setEnforcement({ data: null, loading: false, error: String(e.message || e) }));
+    Promise.all([
+      getEnforcement(date, 20),
+      getEnforcementNarration(date, 20).catch(() => null), // best-effort; queue never blocks on it
+    ])
+      .then(([d, n]) => {
+        if (cancelled) return;
+        setEnforcement({ data: d, rationales: n?.rationales || null, loading: false, error: null });
+      })
+      .catch((e) => !cancelled && setEnforcement({ data: null, rationales: null, loading: false, error: String(e.message || e) }));
     return () => {
       cancelled = true;
     };
@@ -185,6 +191,7 @@ export default function App() {
         {enforcementOpen && (
           <EnforcementPanel
             data={enforcement.data}
+            rationales={enforcement.rationales}
             loading={enforcement.loading}
             error={enforcement.error}
             selectedWardId={selected?.ward_id}
@@ -220,6 +227,7 @@ export default function App() {
         </div>
         <SidePanel
           props={selected}
+          date={date}
           corridorState={corridor}
           onShowCorridor={onShowCorridor}
           onClearCorridor={onClearCorridor}

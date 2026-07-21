@@ -38,4 +38,18 @@ export function getEnforcement(date, limit = 20) {
   return getJSON(`/enforcement?${p.toString()}`);
 }
 
+/** Plain-language explanation + EN/HI advisory for one ward. */
+export function getNarration(wardId, date) {
+  const q = date ? `?date=${encodeURIComponent(date)}` : "";
+  return getJSON(`/narration/${encodeURIComponent(wardId)}${q}`);
+}
+
+/** One-line enforcement rationales keyed by ward_id. */
+export function getEnforcementNarration(date, limit = 20) {
+  const p = new URLSearchParams();
+  if (date) p.set("date", date);
+  p.set("limit", String(limit));
+  return getJSON(`/enforcement/narration?${p.toString()}`);
+}
+
 export { API_BASE };

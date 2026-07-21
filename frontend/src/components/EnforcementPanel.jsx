@@ -5,7 +5,15 @@ import { SOURCE_COLORS, SOURCE_LABELS } from "../lib/palette";
 // contrast list of wards whose burden is advected stubble smoke (coordinate
 // regionally, don't deploy an inspector). Lives on the LEFT so it never fights
 // the attribution panel on the right.
-export default function EnforcementPanel({ data, loading, error, selectedWardId, onSelectWard, onClose }) {
+export default function EnforcementPanel({
+  data,
+  rationales,
+  loading,
+  error,
+  selectedWardId,
+  onSelectWard,
+  onClose,
+}) {
   return (
     <aside className="enforce-panel">
       <div className="enforce-head">
@@ -49,6 +57,9 @@ export default function EnforcementPanel({ data, loading, error, selectedWardId,
                     <div className="erow3">
                       {Math.round((e.actionable_frac || 0) * 100)}% of excess is locally fixable · AQI {e.aqi}
                     </div>
+                    {rationales?.[e.ward_id]?.rationale && (
+                      <div className="erationale">{rationales[e.ward_id].rationale}</div>
+                    )}
                   </div>
                 </li>
               );

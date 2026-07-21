@@ -40,6 +40,14 @@ FIRMS_MAP_KEY = os.getenv("FIRMS_MAP_KEY", "").strip()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
 OPENAQ_BASE_URL = os.getenv("OPENAQ_BASE_URL", "https://api.openaq.org/v3")
+
+# --------------------------------------------------------------------------
+# LLM narration (Anthropic). The model only EXPLAINS numbers the engine already
+# produced — it never computes or alters attribution. Degrades to deterministic
+# text when ANTHROPIC_API_KEY is absent; flips to live automatically when set.
+# --------------------------------------------------------------------------
+NARRATION_MODEL = os.getenv("NARRATION_MODEL", "claude-sonnet-4-6")
+NARRATION_MAX_TOKENS = int(os.getenv("NARRATION_MAX_TOKENS", "700"))
 FIRMS_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 FIRMS_AVAILABILITY_URL = "https://firms.modaps.eosdis.nasa.gov/api/data_availability/csv"
 FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")          # near-real-time (~last 2 months)
