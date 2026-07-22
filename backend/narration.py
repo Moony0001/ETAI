@@ -2,10 +2,14 @@
 
 HARD RULE: the model never computes, changes, invents, or re-weights any number.
 It only *explains* figures that are passed in as facts; the prompt says so and we
-pass the computed values in. When ANTHROPIC_API_KEY is absent or the call fails,
-every function degrades to deterministic text built from the same figures — the
-panel is never empty and never stalls the demo. Set the key and it flips to live
-with no code change.
+pass the computed values in.
+
+The provider is swappable via NARRATION_PROVIDER (gemini | groq | anthropic |
+bedrock | ollama | none); every call site goes through one `generate()` function,
+so no SDK detail leaks out. ANY provider failure — missing key, auth error,
+timeout, SDK not installed, "none" — degrades to deterministic text built from the
+same figures, so the panel is never empty and never stalls the demo. Set a key and
+it flips to live with no code change.
 """
 
 from __future__ import annotations
@@ -15,7 +19,22 @@ import logging
 import re
 from typing import Optional
 
-from backend.config import ANTHROPIC_API_KEY, NARRATION_MAX_TOKENS, NARRATION_MODEL
+from backend.config import (
+    ANTHROPIC_API_KEY,
+    AWS_REGION,
+    BEDROCK_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    GROQ_API_KEY,
+    GROQ_BASE_URL,
+    GROQ_MODEL,
+    NARRATION_MAX_TOKENS,
+    NARRATION_MODEL,
+    NARRATION_PROVIDER,
+    NARRATION_TIMEOUT_S,
+    OLLAMA_MODEL,
+    OLLAMA_URL,
+)
 
 logger = logging.getLogger("vayulens.narration")
 
@@ -47,19 +66,140 @@ _BAND_ADVISORY = {
 
 
 def available() -> bool:
-    return bool(ANTHROPIC_API_KEY)
+    """Whether a live provider is configured (else callers use the fallback)."""
+    p = NARRATION_PROVIDER
+    if p == "gemini":
+        return bool(GEMINI_API_KEY)
+    if p == "groq":
+        return bool(GROQ_API_KEY)
+    if p == "anthropic":
+        return bool(ANTHROPIC_API_KEY)
+    if p in ("bedrock", "ollama"):
+        return True  # no simple key check; generate() falls back if unreachable
+    return False  # "none" or unknown
 
 
-_client = None
+def provider() -> str:
+    return NARRATION_PROVIDER
 
 
-def _get_client():
-    global _client
-    if _client is None:
-        import anthropic  # imported lazily so the app runs without the dep issue
+_clients: dict[str, object] = {}  # lazily-built, cached provider clients
 
-        _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    return _client
+
+def generate(system: str, prompt: str, max_tokens: int = NARRATION_MAX_TOKENS) -> str:
+    """Dispatch one text generation to the configured provider.
+
+    Raises on any failure (callers catch and fall back to deterministic text).
+    No provider SDK detail leaks to the call sites — they only ever see a string.
+    """
+    fn = {
+        "gemini": _gen_gemini,
+        "groq": _gen_groq,
+        "anthropic": _gen_anthropic,
+        "bedrock": _gen_bedrock,
+        "ollama": _gen_ollama,
+    }.get(NARRATION_PROVIDER)
+    if fn is None:
+        raise RuntimeError(f"narration provider '{NARRATION_PROVIDER}' is not live")
+    return fn(system, prompt, max_tokens)
+
+
+def _gen_gemini(system: str, prompt: str, max_tokens: int) -> str:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY not set")
+    from google import genai
+    from google.genai import types
+
+    client = _clients.get("gemini")
+    if client is None:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        _clients["gemini"] = client
+    resp = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system,
+            max_output_tokens=max_tokens,
+            response_mime_type="application/json",
+        ),
+    )
+    return resp.text or ""
+
+
+def _gen_groq(system: str, prompt: str, max_tokens: int) -> str:
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY not set")
+    from openai import OpenAI  # Groq speaks the OpenAI wire protocol
+
+    client = _clients.get("groq")
+    if client is None:
+        client = OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL, timeout=NARRATION_TIMEOUT_S)
+        _clients["groq"] = client
+    resp = client.chat.completions.create(
+        model=GROQ_MODEL,
+        max_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+    )
+    return resp.choices[0].message.content or ""
+
+
+def _gen_anthropic(system: str, prompt: str, max_tokens: int) -> str:
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    import anthropic
+
+    client = _clients.get("anthropic")
+    if client is None:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        _clients["anthropic"] = client
+    resp = client.messages.create(
+        model=NARRATION_MODEL,
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return next((b.text for b in resp.content if b.type == "text"), "")
+
+
+def _gen_bedrock(system: str, prompt: str, max_tokens: int) -> str:
+    import boto3  # optional; standard AWS credential chain
+
+    client = _clients.get("bedrock")
+    if client is None:
+        client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+        _clients["bedrock"] = client
+    resp = client.converse(
+        modelId=BEDROCK_MODEL,
+        system=[{"text": system}],
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": max_tokens},
+    )
+    return resp["output"]["message"]["content"][0]["text"]
+
+
+def _gen_ollama(system: str, prompt: str, max_tokens: int) -> str:
+    import httpx  # local daemon, no key
+
+    resp = httpx.post(
+        f"{OLLAMA_URL}/api/chat",
+        json={
+            "model": OLLAMA_MODEL,
+            "stream": False,
+            "format": "json",
+            "options": {"num_predict": max_tokens},
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+        },
+        timeout=NARRATION_TIMEOUT_S,
+    )
+    resp.raise_for_status()
+    return resp.json().get("message", {}).get("content", "")
 
 
 def _extract_json(text: str) -> Optional[dict]:
@@ -170,19 +310,19 @@ def ward_narration(props: dict, trajectory: Optional[dict] = None) -> dict:
             "fires_provenance": trajectory.get("fires_provenance"),
         }
     try:
-        resp = _get_client().messages.create(
-            model=NARRATION_MODEL,
-            max_tokens=NARRATION_MAX_TOKENS,
-            system=_WARD_SYSTEM,
-            messages=[{"role": "user", "content": json.dumps(facts)}],
-        )
-        text = next((b.text for b in resp.content if b.type == "text"), "")
+        text = generate(_WARD_SYSTEM, json.dumps(facts), NARRATION_MAX_TOKENS)
         data = _extract_json(text)
         if data and data.get("explanation"):
+            band_en, band_hi = _BAND_ADVISORY.get(props.get("aqi_band"), ("", ""))
+            hi = str(data.get("advisory_hi") or "")
+            # Safety: if a weak model returns empty/non-Devanagari Hindi, use the
+            # curated band advisory rather than show broken script.
+            if not re.search(r"[ऀ-ॿ]", hi):
+                hi = band_hi
             return {
                 "explanation": str(data["explanation"]),
-                "advisory_en": str(data.get("advisory_en") or _BAND_ADVISORY.get(props.get("aqi_band"), ("", ""))[0]),
-                "advisory_hi": str(data.get("advisory_hi") or _BAND_ADVISORY.get(props.get("aqi_band"), ("", ""))[1]),
+                "advisory_en": str(data.get("advisory_en") or band_en),
+                "advisory_hi": hi,
                 "source": "llm",
             }
         logger.warning("[narration] ward reply unparseable; using fallback.")
@@ -219,13 +359,7 @@ def enforcement_rationales(queue: list[dict]) -> dict:
         for e in queue
     ]
     try:
-        resp = _get_client().messages.create(
-            model=NARRATION_MODEL,
-            max_tokens=NARRATION_MAX_TOKENS,
-            system=_ENFORCE_SYSTEM,
-            messages=[{"role": "user", "content": json.dumps(compact)}],
-        )
-        text = next((b.text for b in resp.content if b.type == "text"), "")
+        text = generate(_ENFORCE_SYSTEM, json.dumps(compact), NARRATION_MAX_TOKENS)
         data = _extract_json(text) or {}
         out = {}
         for e in queue:

@@ -42,12 +42,37 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 OPENAQ_BASE_URL = os.getenv("OPENAQ_BASE_URL", "https://api.openaq.org/v3")
 
 # --------------------------------------------------------------------------
-# LLM narration (Anthropic). The model only EXPLAINS numbers the engine already
-# produced — it never computes or alters attribution. Degrades to deterministic
-# text when ANTHROPIC_API_KEY is absent; flips to live automatically when set.
+# LLM narration. The model only EXPLAINS numbers the engine already produced —
+# it never computes or alters attribution. Provider is swappable via
+# NARRATION_PROVIDER; any provider failure (missing key, timeout, auth, SDK
+# absent) degrades to deterministic text. "none" forces the fallback.
+# Default is Gemini (free, no card at AI Studio).
 # --------------------------------------------------------------------------
-NARRATION_MODEL = os.getenv("NARRATION_MODEL", "claude-sonnet-4-6")
+NARRATION_PROVIDER = os.getenv("NARRATION_PROVIDER", "gemini").strip().lower()
 NARRATION_MAX_TOKENS = int(os.getenv("NARRATION_MAX_TOKENS", "700"))
+# Generation timeout. Generous by default because local models (Ollama) are slow
+# cold — this is fine since warm-caching runs offline; live clicks serve from cache.
+NARRATION_TIMEOUT_S = float(os.getenv("NARRATION_TIMEOUT_S", "120"))
+
+# Gemini — google-genai SDK; free key at https://aistudio.google.com/apikey
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Groq — OpenAI-compatible; free key at https://console.groq.com/keys
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+
+# Anthropic — https://console.anthropic.com/
+NARRATION_MODEL = os.getenv("NARRATION_MODEL", "claude-sonnet-4-6")
+
+# Bedrock (optional) — boto3 + standard AWS credential chain
+BEDROCK_MODEL = os.getenv("BEDROCK_MODEL", "amazon.nova-micro-v1:0")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+# Ollama (optional, fully local) — no key
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 FIRMS_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 FIRMS_AVAILABILITY_URL = "https://firms.modaps.eosdis.nasa.gov/api/data_availability/csv"
 FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")          # near-real-time (~last 2 months)

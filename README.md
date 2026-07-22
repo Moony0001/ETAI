@@ -103,8 +103,28 @@ warning and skips (never crashes).
 |---|---|---|
 | `OPENAQ_API_KEY` | OpenAQ v3 ground sensors | https://explore.openaq.org/register |
 | `FIRMS_MAP_KEY` | NASA FIRMS active fires | https://firms.modaps.eosdis.nasa.gov/api/area/ |
-| `ANTHROPIC_API_KEY` | (optional) NL attribution summaries | https://console.anthropic.com/ |
 | _GEE auth_ | Sentinel-5P / TROPOMI | `uv sync --extra gee` then `earthengine authenticate` |
+
+### LLM narration (optional, swappable provider)
+
+Plain-language explanations + EN/Hindi advisory. Pick a provider with
+`NARRATION_PROVIDER` (default **gemini**); any failure or missing key falls back to
+deterministic text, so it never breaks. `none` forces the fallback.
+
+| Provider | Env | Get it | Notes |
+|---|---|---|---|
+| **gemini** (default) | `GEMINI_API_KEY` | https://aistudio.google.com/apikey | **free, no card**; `gemini-2.5-flash` |
+| **groq** | `GROQ_API_KEY` | https://console.groq.com/keys | **free, no card**; `llama-3.1-8b-instant` |
+| **anthropic** | `ANTHROPIC_API_KEY` | https://console.anthropic.com/ | `claude-sonnet-4-6` |
+| **bedrock** | AWS creds + `AWS_REGION` | standard AWS chain | `amazon.nova-micro-v1:0` (Converse) |
+| **ollama** | — (local) | `ollama serve` + `ollama pull llama3.2` | fully offline, no key |
+
+**Warm the cache before a demo** so live clicks make zero API calls:
+
+```bash
+uv run python scripts/warm_narrations.py --date 2024-11-08 --top-n 10
+# then the demo can run with NARRATION_PROVIDER=none — warmed wards serve from cache.
+```
 
 ---
 

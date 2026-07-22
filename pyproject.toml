@@ -17,7 +17,10 @@ dependencies = [
     "duckdb>=1.0",
     "pyarrow>=16.0",
     "lightgbm>=4.3",
+    # LLM narration providers (all optional at runtime; swappable via NARRATION_PROVIDER)
     "anthropic>=0.34",
+    "google-genai>=1.0",
+    "openai>=1.40",
 ]
 
 [project.optional-dependencies]
