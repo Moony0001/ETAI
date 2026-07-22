@@ -113,7 +113,7 @@ deterministic text, so it never breaks. `none` forces the fallback.
 
 | Provider | Env | Get it | Notes |
 |---|---|---|---|
-| **gemini** (default) | `GEMINI_API_KEY` | https://aistudio.google.com/apikey | **free, no card**; `gemini-2.5-flash` |
+| **gemini** (default) | `GEMINI_API_KEY` | https://aistudio.google.com/apikey | **free, no card**; `gemini-flash-lite-latest` (fast, fluent Hindi, large free quota) |
 | **groq** | `GROQ_API_KEY` | https://console.groq.com/keys | **free, no card**; `llama-3.1-8b-instant` |
 | **anthropic** | `ANTHROPIC_API_KEY` | https://console.anthropic.com/ | `claude-sonnet-4-6` |
 | **bedrock** | AWS creds + `AWS_REGION` | standard AWS chain | `amazon.nova-micro-v1:0` (Converse) |

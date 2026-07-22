@@ -49,14 +49,20 @@ OPENAQ_BASE_URL = os.getenv("OPENAQ_BASE_URL", "https://api.openaq.org/v3")
 # Default is Gemini (free, no card at AI Studio).
 # --------------------------------------------------------------------------
 NARRATION_PROVIDER = os.getenv("NARRATION_PROVIDER", "gemini").strip().lower()
-NARRATION_MAX_TOKENS = int(os.getenv("NARRATION_MAX_TOKENS", "700"))
+# Budget must cover BOTH thinking and answer tokens — Gemini 2.5/3.x "thinking" is
+# on by default and counts against this, so a small budget yields empty output.
+NARRATION_MAX_TOKENS = int(os.getenv("NARRATION_MAX_TOKENS", "2048"))
 # Generation timeout. Generous by default because local models (Ollama) are slow
 # cold — this is fine since warm-caching runs offline; live clicks serve from cache.
 NARRATION_TIMEOUT_S = float(os.getenv("NARRATION_TIMEOUT_S", "120"))
 
-# Gemini — google-genai SDK; free key at https://aistudio.google.com/apikey
+# Gemini — google-genai SDK; free key at https://aistudio.google.com/apikey.
+# Default is the drift-proof `gemini-flash-lite-latest` alias: for short narration
+# it is faster (no thinking overhead), ~3x cheaper in tokens, has a far larger free
+# daily quota than full flash, and still writes fluent Hindi. Pinned ids like
+# gemini-2.5-flash get retired for new keys ("no longer available to new users").
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
 # Groq — OpenAI-compatible; free key at https://console.groq.com/keys
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()

@@ -84,6 +84,7 @@ def provider() -> str:
 
 
 _clients: dict[str, object] = {}  # lazily-built, cached provider clients
+_LAST_USAGE: dict = {}  # token usage from the most recent Gemini call (observability)
 
 
 def generate(system: str, prompt: str, max_tokens: int = NARRATION_MAX_TOKENS) -> str:
@@ -123,6 +124,15 @@ def _gen_gemini(system: str, prompt: str, max_tokens: int) -> str:
             response_mime_type="application/json",
         ),
     )
+    um = getattr(resp, "usage_metadata", None)
+    if um is not None:
+        _LAST_USAGE.clear()
+        _LAST_USAGE.update(
+            prompt=um.prompt_token_count,
+            thoughts=getattr(um, "thoughts_token_count", 0) or 0,
+            output=um.candidates_token_count or 0,
+            total=um.total_token_count,
+        )
     return resp.text or ""
 
 

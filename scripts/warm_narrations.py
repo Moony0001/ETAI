@@ -42,10 +42,29 @@ def _load_or_compute_batch(con, t, date_str):
     return result.meta, result.geojson
 
 
+def _retrying(make, is_fallback, retries: int, pace: float, label: str):
+    """Call make() and, while the result is a provider fallback (e.g. a 429 rate
+    limit), wait `pace` seconds and retry up to `retries` times. Free tiers cap
+    requests-per-minute hard, so pacing + retry is what lets a full warm complete."""
+    result = make()
+    attempt = 0
+    while is_fallback(result) and attempt < retries and narration.available():
+        attempt += 1
+        print(f"        {label}: fallback (likely rate limit) — waiting {pace:.0f}s, retry {attempt}/{retries}")
+        time.sleep(pace)
+        result = make()
+    return result
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Warm the narration cache for a demo date.")
     ap.add_argument("--date", default="2024-11-08", help="YYYY-MM-DD (default: locked demo episode)")
-    ap.add_argument("--top-n", type=int, default=10, help="how many enforcement wards to warm")
+    ap.add_argument("--top-n", type=int, default=8, help="how many enforcement wards' explanations to warm")
+    ap.add_argument("--enforcement-limit", type=int, default=20,
+                    help="limit the enforcement-rationale cache is keyed by (match the frontend; default 20)")
+    ap.add_argument("--pace", type=float, default=13.0,
+                    help="seconds between LLM calls (free tiers cap ~5 req/min; 13s stays under)")
+    ap.add_argument("--retries", type=int, default=3, help="retries per call when rate-limited")
     args = ap.parse_args()
 
     t = datetime.strptime(args.date, "%Y-%m-%d").replace(hour=12, tzinfo=timezone.utc)
@@ -61,32 +80,51 @@ def main() -> None:
     features = geojson["features"]
     by_id = {f["properties"]["ward_id"]: f["properties"] for f in features}
 
-    queue, _regional = rank_enforcement(features, limit=args.top_n)
-
-    # wards to warm: the enforcement queue + the central ward (likely first click)
+    # wards to warm: the top-N enforcement wards + the central ward (likely clicks)
+    warm_queue, _regional = rank_enforcement(features, limit=args.top_n)
     central = GeoDataAdapter().ward_at(*DELHI_CENTER)
-    ward_ids = [e["ward_id"] for e in queue]
+    ward_ids = [e["ward_id"] for e in warm_queue]
     if central and central.ward_id not in ward_ids:
         ward_ids.append(central.ward_id)
 
-    print(f"\n  warming {len(ward_ids)} ward narrations…")
-    llm = fb = 0
+    print(f"\n  warming {len(ward_ids)} ward narrations (pace {args.pace:.0f}s, retries {args.retries})…")
+    llm = fb = skipped = 0
     for i, wid in enumerate(ward_ids, 1):
         props = by_id.get(wid)
         if props is None:
             continue
+        # idempotent: leave wards already cached as llm alone (saves rate-limit budget)
+        existing = db.load_narration(con, "ward", wid, date_str)
+        if existing and existing.get("source") == "llm":
+            skipped += 1
+            llm += 1
+            print(f"    [{i:>2}/{len(ward_ids)}] {wid:<14} skip (already llm)")
+            continue
         traj = db.load_trajectory(con, wid, date_str, TRAJECTORY_PRESSURE_LEVEL)
         t0 = time.time()
-        result = narration.ward_narration(props, trajectory=traj)
+        result = _retrying(
+            lambda: narration.ward_narration(props, trajectory=traj),
+            lambda r: r["source"] == "fallback",
+            args.retries, args.pace, wid,
+        )
         db.save_narration(con, "ward", wid, date_str, result)
         llm += result["source"] == "llm"
         fb += result["source"] == "fallback"
         print(f"    [{i:>2}/{len(ward_ids)}] {wid:<14} {result['source']:<8} {time.time()-t0:5.1f}s")
+        if i < len(ward_ids) and narration.available():
+            time.sleep(args.pace)  # respect the requests-per-minute cap
 
-    print(f"\n  warming enforcement rationales (top {args.top_n}, one call)…")
+    # enforcement rationales: ONE call for the top enforcement-limit wards, keyed to
+    # match what the frontend requests (default 20) so the demo serves from cache.
+    rat_queue, _r = rank_enforcement(features, limit=args.enforcement_limit)
+    print(f"\n  warming enforcement rationales (top {args.enforcement_limit}, one call)…")
     t0 = time.time()
-    rationales = narration.enforcement_rationales(queue)
-    db.save_narration(con, "enforcement", f"limit{args.top_n}", date_str,
+    rationales = _retrying(
+        lambda: narration.enforcement_rationales(rat_queue),
+        lambda r: any(v.get("source") == "fallback" for v in r.values()),
+        args.retries, args.pace, "enforcement",
+    )
+    db.save_narration(con, "enforcement", f"limit{args.enforcement_limit}", date_str,
                       {"date": date_str, "rationales": rationales})
     r_llm = sum(1 for v in rationales.values() if v.get("source") == "llm")
     print(f"    {len(rationales)} rationales ({r_llm} llm / {len(rationales) - r_llm} fallback) "
@@ -94,7 +132,8 @@ def main() -> None:
 
     con.close()
     print("\n" + "=" * 66)
-    print(f"  DONE · wards: {llm} llm / {fb} fallback · cached in DuckDB (kind=ward|enforcement).")
+    print(f"  DONE · wards: {llm} llm ({skipped} already-cached) / {fb} fallback · "
+          f"enforcement: {r_llm}/{len(rationales)} llm · cached in DuckDB.")
     print("  Verify demo-safety:  restart the API with NARRATION_PROVIDER=none —")
     print("  these wards still serve full narrations from cache; others fall back.")
     print("=" * 66)
